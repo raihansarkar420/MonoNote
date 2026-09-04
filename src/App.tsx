@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { supabase, isSupabaseConfigured } from './lib/supabase';
 import { UserProfile } from './types';
 import { LoginView } from './components/LoginView';
 import { DashboardView } from './components/DashboardView';
@@ -10,84 +9,39 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Check local preview session first
-    const demoSession = localStorage.getItem('minimal_note_demo_session');
-    if (demoSession) {
+    // 1. Check existing email user session
+    const savedUser = localStorage.getItem('minimal_note_user');
+    if (savedUser) {
       try {
-        const parsed = JSON.parse(demoSession);
-        setUser(parsed);
-        setLoading(false);
-        return;
+        const parsed = JSON.parse(savedUser);
+        if (parsed?.email) {
+          setUser(parsed);
+          setLoading(false);
+          return;
+        }
       } catch (e) {
-        localStorage.removeItem('minimal_note_demo_session');
+        localStorage.removeItem('minimal_note_user');
       }
     }
-
-    if (!isSupabaseConfigured) {
-      setLoading(false);
-      return;
-    }
-
-    // 1. Get current Supabase session
-    const checkSession = async () => {
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user) {
-          setUser({
-            id: session.user.id,
-            email: session.user.email,
-            isAnonymous: session.user.is_anonymous,
-          });
-        }
-      } catch (error) {
-        console.error('Error checking auth session:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    checkSession();
-
-    // 2. Listen to Supabase auth state changes (e.g. Magic Link click callback)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        if (session?.user) {
-          setUser({
-            id: session.user.id,
-            email: session.user.email,
-            isAnonymous: session.user.is_anonymous,
-          });
-        } else if (!localStorage.getItem('minimal_note_demo_session')) {
-          setUser(null);
-        }
-        setLoading(false);
-      }
-    );
-
-    return () => {
-      subscription.unsubscribe();
-    };
+    setLoading(false);
   }, []);
 
-  const handleDemoLogin = (email: string) => {
-    const demoUser: UserProfile = {
-      id: 'demo-user-' + Math.random().toString(36).substring(2, 9),
-      email: email || 'demo.writer@supabase.co',
-      isDemo: true,
+  // Direct Email Login: No password and no confirmation email required!
+  const handleEmailLogin = (emailInput: string) => {
+    const cleanEmail = emailInput.trim().toLowerCase();
+    if (!cleanEmail) return;
+
+    const emailUser: UserProfile = {
+      id: cleanEmail,
+      email: cleanEmail,
     };
-    localStorage.setItem('minimal_note_demo_session', JSON.stringify(demoUser));
-    setUser(demoUser);
+
+    localStorage.setItem('minimal_note_user', JSON.stringify(emailUser));
+    setUser(emailUser);
   };
 
-  const handleLogout = async () => {
-    localStorage.removeItem('minimal_note_demo_session');
-    if (isSupabaseConfigured) {
-      try {
-        await supabase.auth.signOut();
-      } catch (err) {
-        console.error('Error logging out:', err);
-      }
-    }
+  const handleLogout = () => {
+    localStorage.removeItem('minimal_note_user');
     setUser(null);
   };
 
@@ -95,7 +49,7 @@ export default function App() {
     return (
       <div className="min-h-screen w-full bg-[#FDFDFD] flex flex-col items-center justify-center text-[#71717A] gap-3 font-sans">
         <Loader2 className="w-6 h-6 animate-spin text-black" />
-        <span className="text-xs font-mono">Initializing note workspace...</span>
+        <span className="text-xs font-mono">Opening distraction-free workspace...</span>
       </div>
     );
   }
@@ -103,6 +57,7 @@ export default function App() {
   return user ? (
     <DashboardView user={user} onLogout={handleLogout} />
   ) : (
-    <LoginView onDemoLogin={handleDemoLogin} />
+    <LoginView onEmailLogin={handleEmailLogin} />
   );
 }
+
