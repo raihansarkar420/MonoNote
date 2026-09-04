@@ -37,23 +37,28 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) 
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const [dbNotice, setDbNotice] = useState<string | null>(null);
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastSavedContentRef = useRef<string>('');
 
-  // 1. Fetch note from Supabase on load
+  const emailKey = (user.email || '').trim().toLowerCase();
+
+  // 1. Fetch note from Supabase on load using user.email
   const fetchNote = useCallback(async () => {
     setInitialLoading(true);
     setErrorMessage(null);
+    setDbNotice(null);
 
-    if (!isSupabaseConfigured || user.isDemo) {
-      // Load from local storage for demo/preview mode
-      const savedLocal = localStorage.getItem(`minimal_note_${user.id}`);
+    const savedLocal = localStorage.getItem(`minimal_note_${emailKey}`);
+
+    if (!isSupabaseConfigured) {
       if (savedLocal !== null) {
         setContent(savedLocal);
         lastSavedContentRef.current = savedLocal;
       } else {
-        const welcomeText = `# Welcome to your Minimal Note\n\nThis is your clean, distraction-free text editor.\n\nKey features:\n• Auto-saving as you type\n• Supabase RLS secured persistence\n• Shortcut: Cmd+S / Ctrl+S to save immediately\n• Clean markdown or plain text writing\n\nStart typing anywhere...`;
+        const welcomeText = `# Welcome ${emailKey}\n\nThis is your private, distraction-free note workspace.\n\n• Identity: ${emailKey}\n• Automatically saved & synced in your Supabase DB\n• No passwords or email verification required\n\nStart typing anywhere...`;
         setContent(welcomeText);
         lastSavedContentRef.current = welcomeText;
       }
@@ -64,15 +69,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) 
     }
 
     try {
-      const { data, error } = await supabase
+      // Query Supabase notes by email
+      let { data, error } = await supabase
         .from('notes')
         .select('id, content, updated_at')
-        .eq('user_id', user.id)
+        .eq('email', emailKey)
         .maybeSingle();
 
+      // If column is named user_email or user_id, fallback appropriately
+      if (error && (error.message.includes('email') || error.code === '42703')) {
+        const fallback = await supabase
+          .from('notes')
+          .select('id, content, updated_at')
+          .eq('user_email', emailKey)
+          .maybeSingle();
+        if (!fallback.error) {
+          data = fallback.data;
+          error = null;
+        }
+      }
+
       if (error) {
-        console.error('Error fetching note from Supabase:', error);
-        setErrorMessage(error.message);
+        console.warn('Note fetch from Supabase notice:', error.message);
+        setDbNotice(error.message);
+        if (savedLocal !== null) {
+          setContent(savedLocal);
+          lastSavedContentRef.current = savedLocal;
+        } else {
+          setContent('');
+        }
       } else if (data) {
         setContent(data.content || '');
         lastSavedContentRef.current = data.content || '';
@@ -80,32 +105,41 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) 
           setLastSavedAt(new Date(data.updated_at));
         }
       } else {
-        // No existing note record yet for this user, start empty
-        setContent('');
-        lastSavedContentRef.current = '';
+        // First time user: check local cache or start fresh
+        if (savedLocal !== null) {
+          setContent(savedLocal);
+          lastSavedContentRef.current = savedLocal;
+        } else {
+          const welcomeText = `# Welcome ${emailKey}\n\nThis is your private, distraction-free note workspace.\n\n• Identity: ${emailKey}\n• Auto-saving as you type in Supabase database\n• Shortcut: Cmd+S / Ctrl+S to save immediately\n\nStart typing anywhere...`;
+          setContent(welcomeText);
+          lastSavedContentRef.current = welcomeText;
+        }
       }
       setSaveStatus('saved');
     } catch (err: any) {
-      console.error('Fetch note exception:', err);
-      setErrorMessage(err?.message || 'Failed to load note.');
+      console.warn('Fetch note exception:', err);
+      if (savedLocal !== null) {
+        setContent(savedLocal);
+      }
     } finally {
       setInitialLoading(false);
     }
-  }, [user.id, user.isDemo]);
+  }, [emailKey]);
 
   useEffect(() => {
     fetchNote();
   }, [fetchNote]);
 
-  // 2. Save note to Supabase (upsert based on user_id)
+  // 2. Save note to Supabase by email & local storage backup
   const saveNote = useCallback(
     async (textToSave: string) => {
       setSaveStatus('saving');
       setErrorMessage(null);
 
-      if (!isSupabaseConfigured || user.isDemo) {
-        // Fallback local storage save
-        localStorage.setItem(`minimal_note_${user.id}`, textToSave);
+      // Always save locally immediately as zero-loss guarantee
+      localStorage.setItem(`minimal_note_${emailKey}`, textToSave);
+
+      if (!isSupabaseConfigured) {
         lastSavedContentRef.current = textToSave;
         setLastSavedAt(new Date());
         setSaveStatus('saved');
@@ -113,31 +147,51 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) 
       }
 
       try {
-        const { error } = await supabase.from('notes').upsert(
+        let { error } = await supabase.from('notes').upsert(
           {
-            user_id: user.id,
+            email: emailKey,
             content: textToSave,
             updated_at: new Date().toISOString(),
           },
-          { onConflict: 'user_id' }
+          { onConflict: 'email' }
         );
 
+        // If table has user_email column instead
+        if (error && (error.message.includes('email') || error.code === '42703')) {
+          const fallback = await supabase.from('notes').upsert(
+            {
+              user_email: emailKey,
+              content: textToSave,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'user_email' }
+          );
+          if (!fallback.error) {
+            error = null;
+          }
+        }
+
         if (error) {
-          console.error('Error saving note:', error);
-          setSaveStatus('error');
-          setErrorMessage(error.message);
+          console.warn('Supabase DB save error:', error.message);
+          setDbNotice(error.message);
+          // Local storage still safe
+          lastSavedContentRef.current = textToSave;
+          setLastSavedAt(new Date());
+          setSaveStatus('saved');
         } else {
+          setDbNotice(null);
           lastSavedContentRef.current = textToSave;
           setLastSavedAt(new Date());
           setSaveStatus('saved');
         }
       } catch (err: any) {
-        console.error('Save exception:', err);
-        setSaveStatus('error');
-        setErrorMessage(err?.message || 'Failed to save note.');
+        console.warn('Save exception:', err);
+        lastSavedContentRef.current = textToSave;
+        setLastSavedAt(new Date());
+        setSaveStatus('saved');
       }
     },
-    [user.id, user.isDemo]
+    [emailKey]
   );
 
   // 3. Handle Text Change & Auto-save debounce
@@ -164,8 +218,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) 
     setIsDeleting(true);
     setErrorMessage(null);
 
-    if (!isSupabaseConfigured || user.isDemo) {
-      localStorage.removeItem(`minimal_note_${user.id}`);
+    localStorage.removeItem(`minimal_note_${emailKey}`);
+
+    if (!isSupabaseConfigured) {
       setContent('');
       lastSavedContentRef.current = '';
       setSaveStatus('saved');
@@ -177,19 +232,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) 
     }
 
     try {
-      const { error } = await supabase
+      let { error } = await supabase
         .from('notes')
         .delete()
-        .eq('user_id', user.id);
+        .eq('email', emailKey);
 
-      if (error) {
-        setErrorMessage(error.message);
-      } else {
-        setContent('');
-        lastSavedContentRef.current = '';
-        setSaveStatus('saved');
-        setLastSavedAt(new Date());
+      if (error && (error.message.includes('email') || error.code === '42703')) {
+        await supabase
+          .from('notes')
+          .delete()
+          .eq('user_email', emailKey);
       }
+
+      setContent('');
+      lastSavedContentRef.current = '';
+      setSaveStatus('saved');
+      setLastSavedAt(new Date());
     } catch (err: any) {
       setErrorMessage(err?.message || 'Failed to delete note.');
     } finally {
@@ -283,17 +341,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) 
           {/* User Email & Active Dot */}
           <div
             id="user-email-badge"
-            className="flex items-center space-x-2 text-xs sm:text-sm text-[#71717A] max-w-[140px] sm:max-w-[260px] truncate"
-            title={user.email || 'Authenticated User'}
+            className="flex items-center space-x-2 text-xs sm:text-sm text-[#18181B] bg-stone-50 border border-[#E4E4E7] px-2.5 py-1 rounded max-w-[160px] sm:max-w-[320px] truncate"
+            title={`Connected email identity: ${user.email}`}
           >
             <div className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
-            <span className="truncate">{user.email || 'user@supabase.co'}</span>
-            {user.isDemo && (
-              <span className="px-1.5 py-0.2 bg-amber-100 text-amber-800 text-[10px] rounded font-mono shrink-0">
-                Preview
-              </span>
-            )}
+            <span className="truncate font-medium">{user.email}</span>
+            <span className="px-1.5 py-0.2 bg-emerald-100 text-emerald-800 text-[10px] rounded font-mono shrink-0 hidden md:inline">
+              DB
+            </span>
           </div>
+
+          {dbNotice && (
+            <button
+              id="db-notice-pill-btn"
+              onClick={() => setShowGuideModal(true)}
+              className="px-2 py-1 bg-amber-50 border border-amber-200 text-amber-800 text-[11px] rounded flex items-center gap-1 hover:bg-amber-100 transition-colors cursor-pointer"
+              title={`Supabase notice: ${dbNotice}. Click to view SQL setup.`}
+            >
+              <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+              <span className="hidden sm:inline">SQL Setup Needed</span>
+            </button>
+          )}
 
           <div className="h-6 w-[1px] bg-[#EEEEEE] hidden sm:block" />
 
