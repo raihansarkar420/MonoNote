@@ -6,39 +6,57 @@ interface SupabaseGuideModalProps {
   onClose: () => void;
 }
 
-const SQL_SCHEMA = `-- 1. Create the \`notes\` table
+const SQL_SCHEMA = `-- 1. Create the \`notes\` table with email identity
 create table if not exists public.notes (
     id uuid primary key default gen_random_uuid(),
-    user_id uuid references auth.users(id) on delete cascade not null,
+    email text unique not null,
     content text default '' not null,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-    updated_at timestamp with time zone default timezone('utc'::text, now()) not null,
-    constraint notes_user_id_key unique (user_id)
+    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- 2. Index for fast user_id query lookup
-create index if not exists idx_notes_user_id on public.notes (user_id);
+-- 2. Adapt existing table if it already has user_id
+alter table public.notes add column if not exists email text;
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns 
+    where table_name = 'notes' and column_name = 'user_id'
+  ) then
+    alter table public.notes alter column user_id drop not null;
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'notes_email_key') then
+    alter table public.notes add constraint notes_email_key unique (email);
+  end if;
+end $$;
 
--- 3. Enable Row Level Security (RLS)
+-- 3. Fast email index
+create index if not exists idx_notes_email on public.notes (email);
+
+-- 4. Enable Row Level Security (RLS)
 alter table public.notes enable row level security;
 
--- 4. Set RLS Policies (auth.uid() = user_id)
-create policy "Users can view their own note"
-    on public.notes for select
-    using (auth.uid() = user_id);
+-- 5. Set RLS Policy for direct email access
+drop policy if exists "Allow direct email access to notes" on public.notes;
+create policy "Allow direct email access to notes"
+    on public.notes for all
+    using (true)
+    with check (true);
 
-create policy "Users can insert their own note"
-    on public.notes for insert
-    with check (auth.uid() = user_id);
+-- 6. Updated_at automated trigger
+create or replace function public.handle_updated_at()
+returns trigger as $$
+begin
+    new.updated_at = timezone('utc'::text, now());
+    return new;
+end;
+$$ language plpgsql security definer;
 
-create policy "Users can update their own note"
-    on public.notes for update
-    using (auth.uid() = user_id)
-    with check (auth.uid() = user_id);
-
-create policy "Users can delete their own note"
-    on public.notes for delete
-    using (auth.uid() = user_id);`;
+drop trigger if exists set_notes_updated_at on public.notes;
+create trigger set_notes_updated_at
+    before update on public.notes
+    for each row
+    execute function public.handle_updated_at();`;
 
 export const SupabaseGuideModal: React.FC<SupabaseGuideModalProps> = ({ isOpen, onClose }) => {
   const [copied, setCopied] = useState(false);
