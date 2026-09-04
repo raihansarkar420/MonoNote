@@ -1,0 +1,6 @@
+{
+  "name": "Minimal Note",
+  "description": "Distraction-free single note web application with Supabase magic link authentication and RLS persistence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
