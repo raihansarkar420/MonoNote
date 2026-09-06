@@ -1,6 +1,7 @@
 export interface Note {
   id: string;
   email: string;
+  title: string;
   user_id?: string;
   content: string;
   created_at: string;
