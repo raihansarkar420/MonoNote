@@ -6,32 +6,39 @@ interface SupabaseGuideModalProps {
   onClose: () => void;
 }
 
-const SQL_SCHEMA = `-- 1. Create the \`notes\` table with email identity
+const SQL_SCHEMA = `-- 1. Create the \`notes\` table for multiple items with titles
 create table if not exists public.notes (
     id uuid primary key default gen_random_uuid(),
-    email text unique not null,
+    email text not null,
+    title text default 'Untitled' not null,
     content text default '' not null,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- 2. Adapt existing table if it already has user_id
+-- 2. Adapt existing table: add title, remove unique constraints so 1 user can have multiple notes
 alter table public.notes add column if not exists email text;
+alter table public.notes add column if not exists title text default 'Untitled';
+
 do $$
 begin
+  if exists (select 1 from pg_constraint where conname = 'notes_email_key') then
+    alter table public.notes drop constraint notes_email_key;
+  end if;
+  if exists (select 1 from pg_constraint where conname = 'notes_user_id_key') then
+    alter table public.notes drop constraint notes_user_id_key;
+  end if;
   if exists (
     select 1 from information_schema.columns 
     where table_name = 'notes' and column_name = 'user_id'
   ) then
     alter table public.notes alter column user_id drop not null;
   end if;
-  if not exists (select 1 from pg_constraint where conname = 'notes_email_key') then
-    alter table public.notes add constraint notes_email_key unique (email);
-  end if;
 end $$;
 
--- 3. Fast email index
+-- 3. Fast indexes
 create index if not exists idx_notes_email on public.notes (email);
+create index if not exists idx_notes_updated_at on public.notes (updated_at desc);
 
 -- 4. Enable Row Level Security (RLS)
 alter table public.notes enable row level security;
