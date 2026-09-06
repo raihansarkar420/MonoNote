@@ -1,6 +1,6 @@
 {
   "name": "Minimal Note",
-  "description": "Distraction-free single note web application with Supabase magic link authentication and RLS persistence.",
+  "description": "Distraction-free multi-file text workspace with email identity and Supabase database persistence.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
